@@ -1,5 +1,5 @@
 # Simple Vite dev server setup
-FROM node:18-alpine
+FROM docker.m.daocloud.io/library/node:18-alpine
 
 WORKDIR /app
 

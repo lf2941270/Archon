@@ -1,26 +1,38 @@
 # Server Service - Web crawling and document processing microservice
 
 # Build stage
-FROM python:3.11 AS builder
+FROM docker.m.daocloud.io/library/python:3.11-bookworm AS builder
 
 WORKDIR /build
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+# Configure APT to use stable Chinese mirrors
+RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list
+
+# Install build dependencies with retry mechanism
+RUN apt-get update --fix-missing || apt-get update --fix-missing || apt-get update && \
+    apt-get install -y --no-install-recommends \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Copy and install Python dependencies
 COPY requirements.server.txt .
 RUN pip install --user --no-cache-dir -r requirements.server.txt
 
 # Runtime stage
-FROM python:3.11-slim
+FROM docker.m.daocloud.io/library/python:3.11-slim
 
 WORKDIR /app
 
-# Install runtime dependencies for Playwright (minimal set)
-RUN apt-get update && apt-get install -y \
+# Configure APT to use stable Chinese mirrors
+RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main" >> /etc/apt/sources.list
+
+# Install runtime dependencies for Playwright (minimal set) with retry mechanism
+RUN apt-get update --fix-missing || apt-get update --fix-missing || apt-get update && \
+    apt-get install -y --no-install-recommends \
     wget \
     ca-certificates \
     fonts-liberation \
