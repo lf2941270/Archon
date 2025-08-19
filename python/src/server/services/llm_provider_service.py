@@ -9,6 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 import openai
 
 from ..config.logfire_config import get_logger
@@ -97,7 +98,10 @@ async def get_llm_client(provider: str | None = None, use_embedding_provider: bo
             if not api_key:
                 raise ValueError("OpenAI API key not found")
 
-            client = openai.AsyncOpenAI(api_key=api_key)
+            client = openai.AsyncOpenAI(
+                api_key=api_key,
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
             logger.info("OpenAI client created successfully")
 
         elif provider_name == "ollama":
@@ -105,6 +109,7 @@ async def get_llm_client(provider: str | None = None, use_embedding_provider: bo
             client = openai.AsyncOpenAI(
                 api_key="ollama",  # Required but unused by Ollama
                 base_url=base_url or "http://localhost:11434/v1",
+                timeout=httpx.Timeout(300.0, connect=30.0),  # Longer timeout for local models
             )
             logger.info(f"Ollama client created successfully with base URL: {base_url}")
 
@@ -112,11 +117,15 @@ async def get_llm_client(provider: str | None = None, use_embedding_provider: bo
             if not api_key:
                 raise ValueError("Google API key not found")
 
+            # Set longer timeout for Google Gemini API (120 seconds)
+            resolved_base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
             client = openai.AsyncOpenAI(
                 api_key=api_key,
-                base_url=base_url or "https://generativelanguage.googleapis.com/v1beta/openai/",
+                base_url=resolved_base_url,
+                timeout=httpx.Timeout(120.0, connect=30.0),
             )
-            logger.info("Google Gemini client created successfully")
+            logger.info(f"Google Gemini client created successfully with extended timeout")
+            logger.info(f"📍 Google Gemini client base URL: {resolved_base_url}")
 
         else:
             raise ValueError(f"Unsupported LLM provider: {provider_name}")

@@ -208,12 +208,27 @@ async def create_embeddings_batch(
                         # Rate limit each batch
                         async with threading_service.rate_limited_operation(batch_tokens):
                             retry_count = 0
-                            max_retries = 3
+                            max_retries = 5
 
                             while retry_count < max_retries:
                                 try:
                                     # Create embeddings for this batch
                                     embedding_model = await get_embedding_model(provider=provider)
+                                    
+                                    # Get the base URL for logging
+                                    base_url = getattr(client, 'base_url', 'Unknown')
+                                    if hasattr(base_url, '__str__'):
+                                        base_url = str(base_url)
+                                    
+                                    # Log the API call details
+                                    api_url = f"{base_url}embeddings"
+                                    search_logger.info(
+                                        f"Making embedding request to: {api_url}"
+                                        f" | Model: {embedding_model}"
+                                        f" | Batch size: {len(batch)}"
+                                        f" | Dimensions: {embedding_dimensions}"
+                                    )
+                                    
                                     response = await client.embeddings.create(
                                         model=embedding_model,
                                         input=batch,
@@ -226,8 +241,39 @@ async def create_embeddings_batch(
 
                                     break  # Success, exit retry loop
 
-                                except openai.RateLimitError as e:
+                                except (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError) as e:
                                     error_message = str(e)
+                                    
+                                    # Get detailed error information
+                                    base_url = getattr(client, 'base_url', 'Unknown')
+                                    if hasattr(base_url, '__str__'):
+                                        base_url = str(base_url)
+                                    api_url = f"{base_url}embeddings"
+                                    
+                                    # Extract status code and response details if available
+                                    status_code = getattr(e, 'status_code', 'Unknown')
+                                    response_body = getattr(e, 'response', None)
+                                    response_text = ''
+                                    if response_body and hasattr(response_body, 'text'):
+                                        try:
+                                            response_text = response_body.text
+                                        except:
+                                            response_text = str(response_body)
+                                    
+                                    # Log detailed error information
+                                    search_logger.error(
+                                        f"EMBEDDING API ERROR - Batch {batch_index}, Retry {retry_count + 1}/{max_retries}\n"
+                                        f"  📍 API URL: {api_url}\n"
+                                        f"  🔥 Error Type: {type(e).__name__}\n"
+                                        f"  📋 Error Message: {error_message}\n"
+                                        f"  📊 Status Code: {status_code}\n"
+                                        f"  📄 Response Body: {response_text[:500] if response_text else 'None'}\n"
+                                        f"  📦 Model: {embedding_model}\n"
+                                        f"  📏 Batch Size: {len(batch)}\n"
+                                        f"  🎯 Dimensions: {embedding_dimensions}",
+                                        exc_info=True
+                                    )
+                                    
                                     if "insufficient_quota" in error_message:
                                         # Quota exhausted is critical - stop everything
                                         tokens_so_far = total_tokens_used - batch_tokens
@@ -256,21 +302,59 @@ async def create_embeddings_batch(
                                         return result
 
                                     else:
-                                        # Regular rate limit - retry
+                                        # Rate limit, timeout, or connection error - retry
                                         retry_count += 1
                                         if retry_count < max_retries:
-                                            wait_time = 2**retry_count
-                                            search_logger.warning(
-                                                f"Rate limit hit for batch {batch_index}, "
-                                                f"waiting {wait_time}s before retry {retry_count}/{max_retries}"
-                                            )
+                                            # Use exponential backoff with base time for timeout errors
+                                            if isinstance(e, (openai.APITimeoutError, openai.APIConnectionError)):
+                                                wait_time = min(5 * retry_count, 30)  # 5s, 10s, 15s, 20s, 25s
+                                                search_logger.warning(
+                                                    f"⏱️  RETRYING after timeout/connection error - Batch {batch_index}\n"
+                                                    f"  ⏳ Waiting {wait_time}s before retry {retry_count}/{max_retries}\n"
+                                                    f"  📍 API URL: {api_url}\n"
+                                                    f"  🔥 Error Type: {type(e).__name__}\n"
+                                                    f"  📋 Error: {error_message[:200]}..."
+                                                )
+                                            else:
+                                                wait_time = 2**retry_count
+                                                search_logger.warning(
+                                                    f"🚦 RETRYING after rate limit - Batch {batch_index}\n"
+                                                    f"  ⏳ Waiting {wait_time}s before retry {retry_count}/{max_retries}\n"
+                                                    f"  📍 API URL: {api_url}\n"
+                                                    f"  🔥 Error Type: {type(e).__name__}\n"
+                                                    f"  📋 Error: {error_message[:200]}..."
+                                                )
                                             await asyncio.sleep(wait_time)
                                         else:
+                                            # Final failure - log comprehensive details
+                                            search_logger.error(
+                                                f"💥 FINAL FAILURE after {max_retries} retries - Batch {batch_index}\n"
+                                                f"  📍 API URL: {api_url}\n"
+                                                f"  🔥 Error Type: {type(e).__name__}\n"
+                                                f"  📋 Error Message: {error_message}\n"
+                                                f"  📊 Status Code: {status_code}\n"
+                                                f"  📄 Response Body: {response_text[:500] if response_text else 'None'}\n"
+                                                f"  📦 Model: {embedding_model}\n"
+                                                f"  📏 Batch Size: {len(batch)}\n"
+                                                f"  🎯 Dimensions: {embedding_dimensions}",
+                                                exc_info=True
+                                            )
                                             raise  # Will be caught by outer try
 
                     except Exception as e:
                         # This batch failed - track failures but continue with next batch
-                        search_logger.error(f"Batch {batch_index} failed: {e}", exc_info=True)
+                        # Get additional context for unexpected errors
+                        model_info = await get_embedding_model(provider=provider)
+                        search_logger.error(
+                            f"🚨 UNEXPECTED ERROR in batch {batch_index}\n"
+                            f"  🔥 Error Type: {type(e).__name__}\n"
+                            f"  📋 Error Message: {str(e)}\n"
+                            f"  📦 Model: {model_info}\n"
+                            f"  📏 Batch Size: {len(batch)}\n"
+                            f"  🎯 Dimensions: {embedding_dimensions}\n"
+                            f"  📊 Provider: {provider or 'default'}",
+                            exc_info=True
+                        )
 
                         for text in batch:
                             if isinstance(e, EmbeddingError):

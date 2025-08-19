@@ -457,10 +457,27 @@ class CredentialService:
     def _get_provider_base_url(self, provider: str, rag_settings: dict) -> str | None:
         """Get base URL for provider."""
         if provider == "ollama":
-            return rag_settings.get("LLM_BASE_URL", "http://localhost:11434/v1")
+            base_url = rag_settings.get("LLM_BASE_URL", "http://localhost:11434/v1")
+            logger.debug(f"Ollama base URL resolved: {base_url}")
+            return base_url
         elif provider == "google":
-            return "https://generativelanguage.googleapis.com/v1beta/openai/"
-        return None  # Use default for OpenAI
+            # Check environment variable first, then RAG settings, then default
+            env_base_url = os.getenv("GOOGLE_BASE_URL")
+            rag_base_url = rag_settings.get("GOOGLE_BASE_URL")
+            default_base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            
+            logger.debug(f"Google base URL resolution:")
+            logger.debug(f"  📦 Environment GOOGLE_BASE_URL: {env_base_url}")
+            logger.debug(f"  🗄️  RAG settings GOOGLE_BASE_URL: {rag_base_url}")
+            logger.debug(f"  🏭 Default base URL: {default_base_url}")
+            
+            resolved_url = env_base_url or rag_base_url or default_base_url
+            logger.info(f"📍 Resolved Google base URL: {resolved_url}")
+            
+            return resolved_url
+        else:
+            logger.debug(f"Using default base URL for provider: {provider}")
+            return None  # Use default for OpenAI
 
     async def set_active_provider(self, provider: str, service_type: str = "llm") -> bool:
         """Set the active provider for a service type."""
@@ -511,6 +528,7 @@ async def initialize_credentials() -> None:
     # LLM provider credentials (for sync client support)
     provider_credentials = [
         "GOOGLE_API_KEY",  # Google Gemini API key
+        "GOOGLE_BASE_URL",  # Google Gemini base URL
         "LLM_PROVIDER",  # Selected provider
         "LLM_BASE_URL",  # Ollama base URL
         "EMBEDDING_MODEL",  # Custom embedding model
